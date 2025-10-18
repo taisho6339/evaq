@@ -1,0 +1,16 @@
+[package]
+name = "evaq"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bytes = "1.5"
+fjall = "2.11.2"
+lazy_static = "1.5"
+
+[dev-dependencies]
+tempfile = "3.10"
+tokio = { version = "1.0", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+futures = "0.3.31"
