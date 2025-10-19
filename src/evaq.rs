@@ -1,4 +1,5 @@
-use crate::disk_queue::{ThreadSafeDiskQueue, DiskQueueError, QueueRecord};
+use crate::disk_queue::{DiskQueueError, QueueRecord, ThreadSafeDiskQueue};
+use crate::fjall_queue::FjallDiskQueue;
 use bytes::Bytes;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -9,6 +10,14 @@ pub struct Evaq<Q: ThreadSafeDiskQueue> {
     dead_letter_queue: Q,
     wal_next_id: AtomicU64,
     retry_next_id: AtomicU64,
+}
+
+// Default implementation using FjallDiskQueue
+impl Evaq<FjallDiskQueue> {
+    /// Create a new Evaq instance with the default FjallDiskQueue backend
+    pub fn new(path: PathBuf) -> Result<Self, DiskQueueError> {
+        Self::open(path)
+    }
 }
 
 impl<Q: ThreadSafeDiskQueue> Evaq<Q> {
@@ -187,182 +196,5 @@ mod tests {
 
         // Should get at least 1 record
         assert!(!records.is_empty());
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    #[ignore] // This is a long-running performance test, run with: cargo test -- --ignored
-    async fn test_long_running_performance() {
-        use std::sync::Arc;
-        use std::time::{Duration, Instant};
-        use tokio::time::sleep;
-        use tracing::{info, warn};
-
-        // Initialize tracing
-        let _ = tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::INFO)
-            .try_init();
-
-        // Get workspace path from environment variable
-        let workspace_path = std::env::var("CARGO_WORKSPACE").unwrap_or_else(|_| {
-            std::env::current_dir()
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .to_string()
-        });
-        let test_path = PathBuf::from(workspace_path).join("evaq_perf_test_data");
-
-        // Clean up any existing test data
-        let _ = std::fs::remove_dir_all(&test_path);
-
-        info!("Opening Evaq at path: {:?}", test_path);
-        let evaq = Arc::new(Evaq::<FjallDiskQueue>::open(test_path.clone()).unwrap());
-
-        info!("Starting initial data population: 10,000,000 records of 2KB each");
-        let populate_start = Instant::now();
-        let data_2kb = Bytes::from("x".repeat(2000));
-
-        // Populate initial data
-        for i in 0..1_000_000 {
-            if i % 1_000_000 == 0 {
-                info!("Populated {} million records", i / 1_000_000);
-            }
-            evaq.push_wal(data_2kb.clone()).unwrap();
-            evaq.push_retry_item(data_2kb.clone()).unwrap();
-        }
-        info!(
-            "Initial population completed in {:?}",
-            populate_start.elapsed()
-        );
-
-        // Spawn WAL worker thread
-        let evaq_wal = evaq.clone();
-        let wal_handle = tokio::spawn(async move {
-            info!("WAL worker thread started");
-            let interval_duration = Duration::from_millis(1000);
-            let records_per_interval = 3000;
-            let interval_between_records =
-                interval_duration.as_micros() / records_per_interval as u128;
-
-            let mut total_records = 0u64;
-            let mut interval_count = 0u64;
-
-            loop {
-                let start = Instant::now();
-                let mut handles = Vec::new();
-
-                // Spawn all record processing tasks concurrently
-                for i in 0..records_per_interval {
-                    let evaq_clone = evaq_wal.clone();
-                    let delay = Duration::from_micros((i as u128 * interval_between_records) as u64);
-
-                    let handle = tokio::spawn(async move {
-                        // Stagger the start times to achieve ~3000 records per second
-                        sleep(delay).await;
-
-                        let id = evaq_clone.push_wal(Bytes::from("x".repeat(2000))).unwrap();
-
-                        // Wait 5ms before remove
-                        sleep(Duration::from_millis(5)).await;
-
-                        evaq_clone.remove_wal(id).unwrap();
-                    });
-
-                    handles.push(handle);
-                }
-
-                // Wait for all tasks to complete
-                futures::future::join_all(handles).await;
-
-                let actual_records = records_per_interval;
-                total_records += actual_records as u64;
-                let elapsed = start.elapsed();
-                interval_count += 1;
-
-                // Calculate throughput
-                let throughput = actual_records as f64 / elapsed.as_secs_f64();
-                let avg_throughput = total_records as f64
-                    / (interval_count as f64 * interval_duration.as_secs_f64());
-
-                info!(
-                    "WAL throughput: {:.2} records/sec (current), {:.2} records/sec (average), total: {} records",
-                    throughput, avg_throughput, total_records
-                );
-
-                if elapsed < interval_duration {
-                    sleep(interval_duration - elapsed).await;
-                }
-            }
-        });
-
-        // Spawn retry worker thread
-        let evaq_retry = evaq.clone();
-        let retry_handle = tokio::spawn(async move {
-            info!("Retry worker thread started");
-            let mut offset = 0u64;
-
-            loop {
-                // Wait 10 seconds
-                sleep(Duration::from_secs(10)).await;
-
-                // Fetch records from dead letter queue
-                let fetch_start = Instant::now();
-                let evaq_clone = evaq_retry.clone();
-                let offset_copy = offset;
-                let records = tokio::task::spawn_blocking(move || {
-                    evaq_clone.first_n_bytes_from_dead_letter_queue(offset_copy, 64 * 1024 * 1024)
-                })
-                .await
-                .unwrap()
-                .unwrap();
-                let fetch_duration = fetch_start.elapsed();
-                info!(
-                    "first_n_bytes_from_dead_letter_queue took {:?}, fetched {} records, offset: {}",
-                    fetch_duration,
-                    records.len(),
-                    offset
-                );
-
-                if fetch_duration > Duration::from_secs(1) {
-                    warn!(
-                        "first_n_bytes_from_dead_letter_queue is slow: {:?}",
-                        fetch_duration
-                    );
-                }
-
-                // Wait 1 second
-                sleep(Duration::from_secs(1)).await;
-
-                // Remove processed records
-                if !records.is_empty() {
-                    let ids: Vec<u64> = records.iter().map(|r| r.id).collect();
-                    let last_id = evaq_retry.done_retry_items(ids).unwrap();
-
-                    // Update offset to one more than the last processed ID
-                    if let Some(id) = last_id {
-                        offset = id + 1;
-                    }
-                }
-            }
-        });
-
-        // Run for 10 minutes
-        info!("Running performance test for 10 minutes...");
-        sleep(Duration::from_secs(600)).await;
-
-        info!("Test duration completed, stopping workers...");
-        wal_handle.abort();
-        retry_handle.abort();
-
-        // Clean up test data
-        drop(evaq);
-        sleep(Duration::from_secs(1)).await;
-
-        info!("Cleaning up test data...");
-        if let Err(e) = std::fs::remove_dir_all(&test_path) {
-            warn!("Failed to clean up test data: {}", e);
-        }
-
-        info!("Performance test completed");
     }
 }

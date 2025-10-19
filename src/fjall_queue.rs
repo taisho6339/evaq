@@ -11,7 +11,7 @@ lazy_static::lazy_static! {
 }
 
 /// FjallDiskQueue implementation using fjall LSM-tree storage
-struct FjallDiskQueue {
+pub struct FjallDiskQueue {
     keyspace: Arc<Keyspace>,
     partition: PartitionHandle,
 }
