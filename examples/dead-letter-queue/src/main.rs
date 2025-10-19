@@ -161,6 +161,11 @@ fn spawn_retry_worker(evaq: Arc<Evaq>) -> tokio::task::JoinHandle<()> {
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() {
+    // Initialize tracing subscriber for logging
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .init();
+
     let workspace_path = std::env::var("CARGO_WORKSPACE").unwrap_or_else(|_| {
         std::env::current_dir()
             .unwrap()

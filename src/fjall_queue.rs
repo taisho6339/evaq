@@ -1,6 +1,9 @@
 use crate::disk_queue::{DiskQueueError, QueueRecord, ThreadSafeDiskQueue};
 use bytes::Bytes;
-use fjall::{Config, Keyspace, PartitionCreateOptions, PartitionHandle, PersistMode};
+use fjall::compaction::{Leveled, Strategy as CompactionStrategy};
+use fjall::{
+    Config, Keyspace, KvSeparationOptions, PartitionCreateOptions, PartitionHandle, PersistMode,
+};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -18,27 +21,42 @@ pub struct FjallDiskQueue {
 
 impl ThreadSafeDiskQueue for FjallDiskQueue {
     fn open(path: PathBuf, name: String) -> Result<FjallDiskQueue, DiskQueueError> {
-        let mut cache = KEYSPACE_CACHE.lock().unwrap();
+        const MAX_WRITE_BUFFER_SIZE: u64 = 512 * 1024 * 1024; // 512 MB
+        const MAX_MEMTABLE_SIZE: u32 = 64 * 1024 * 1024; // 64 MB
+        const MAX_JOURNALING_SIZE: u64 = 1024 * 1024 * 1024; // 1 GB
+        const SEGMENT_SIZE: u32 = 64 * 1024 * 1024; // 64 MB
+        const L0_THRESHOLD: u8 = 6;
+        const LEVEL_RATIO: u8 = 10;
+        let leveled = Leveled {
+            l0_threshold: L0_THRESHOLD,
+            target_size: SEGMENT_SIZE,
+            level_ratio: LEVEL_RATIO,
+        };
+        const KV_SEPARATION_THRESHOLD: u32 = 1024; // 1 KB
+        const KV_SEPARATION_FILE_TARGET_SIZE: u64 = 32 * 1024 * 1024; // 32 MB
 
         // Get or create keyspace for this path
+        let mut cache = KEYSPACE_CACHE.lock().unwrap();
         let keyspace = cache
             .entry(path.clone())
             .or_insert_with(|| {
                 let config = Config::new(path)
-                    .max_write_buffer_size(512 * 1024 * 1024)
-                    .flush_workers(4);
+                    .max_write_buffer_size(MAX_WRITE_BUFFER_SIZE)
+                    .max_journaling_size(MAX_JOURNALING_SIZE);
                 Arc::new(config.open().unwrap())
             })
             .clone();
-
         drop(cache);
 
-        // let fifo = Fifo::new(u64::MAX, None);
+        let kvsep = KvSeparationOptions::default()
+            .separation_threshold(KV_SEPARATION_THRESHOLD)
+            .file_target_size(KV_SEPARATION_FILE_TARGET_SIZE); // 32 MB
         let partition = keyspace.open_partition(
             &name,
             PartitionCreateOptions::default()
-                // .compaction_strategy(CompactionStrategy::Fifo(fifo))
-                .max_memtable_size(64 * 1024 * 1024),
+                .compaction_strategy(CompactionStrategy::Leveled(leveled))
+                .max_memtable_size(MAX_MEMTABLE_SIZE)
+                .with_kv_separation(kvsep),
         )?;
 
         Ok(Self {
