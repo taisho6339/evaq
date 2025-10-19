@@ -6,6 +6,17 @@ use std::time::{Duration, Instant};
 use tokio::time::sleep;
 use tracing::{error, info, warn};
 
+const INITIAL_RECORDS: u64 = 1_000_000;
+
+const EVENT_MESSAGE_SIZE: usize = 512;
+const EVENT_PRODUCE_RECORDS_PER_SECOND: usize = 6000;
+const EVENT_PRODUCE_INTERVAL_DURATION_MS: u64 = 1000;
+const EVENT_PRODUCE_SIMULATED_TASK_LATECY_MS: u64 = 5;
+
+const RETRY_INTERVAL_DURATION_SEC: u64 = 10;
+const RETRY_CHUNK_SIZE: usize = 64 * 1024 * 1024; // 64 MB
+const RETRY_SIMULATED_TASK_LATECY_SEC: u64 = 1;
+
 async fn initialize_data(evaq: Arc<Evaq>, total_records: u64, record_size: usize) {
     info!(
         "Starting initial data population: {} records of {} bytes each",
@@ -30,8 +41,8 @@ async fn initialize_data(evaq: Arc<Evaq>, total_records: u64, record_size: usize
 fn spawn_wal_worker(evaq: Arc<Evaq>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         info!("WAL worker thread started");
-        let interval_duration = Duration::from_millis(1000);
-        let records_per_interval = 3000;
+        let interval_duration = Duration::from_millis(EVENT_PRODUCE_INTERVAL_DURATION_MS);
+        let records_per_interval = EVENT_PRODUCE_RECORDS_PER_SECOND;
         let interval_between_records = interval_duration.as_micros() / records_per_interval as u128;
 
         let mut total_records = 0u64;
@@ -49,10 +60,14 @@ fn spawn_wal_worker(evaq: Arc<Evaq>) -> tokio::task::JoinHandle<()> {
                     // Stagger the start times to achieve ~3000 records per second
                     sleep(delay).await;
 
-                    let id = evaq.push_wal(Bytes::from("x".repeat(2000))).unwrap();
+                    let id = evaq
+                        .push_wal(Bytes::from("x".repeat(EVENT_MESSAGE_SIZE)))
+                        .unwrap();
 
-                    // Wait 5ms before remove
-                    sleep(Duration::from_millis(5)).await;
+                    sleep(Duration::from_millis(
+                        EVENT_PRODUCE_SIMULATED_TASK_LATECY_MS,
+                    ))
+                    .await;
 
                     evaq.remove_wal(id).unwrap();
                 });
@@ -62,6 +77,15 @@ fn spawn_wal_worker(evaq: Arc<Evaq>) -> tokio::task::JoinHandle<()> {
 
             // Wait for all tasks to complete
             futures::future::join_all(handles).await;
+
+            // Simulate randomly pushing to dead letter queue
+            if total_records % 1000 == 0 && total_records > 0 {
+                info!(
+                    "Simulating dead letter queue insertion at total_records={}",
+                    total_records
+                );
+                let _ = evaq.push_retry_item(Bytes::from("x".repeat(EVENT_MESSAGE_SIZE)));
+            }
 
             let actual_records = records_per_interval;
             total_records += actual_records as u64;
@@ -90,14 +114,14 @@ fn spawn_retry_worker(evaq: Arc<Evaq>) -> tokio::task::JoinHandle<()> {
             let evaq_fetch = evaq.clone();
             let evaq_done = evaq.clone();
             // Wait 10 seconds
-            sleep(Duration::from_secs(10)).await;
+            sleep(Duration::from_secs(RETRY_INTERVAL_DURATION_SEC)).await;
 
             // Fetch records from dead letter queue
             let fetch_start = Instant::now();
 
             let offset_copy = offset;
             let records = match tokio::task::spawn_blocking(move || {
-                evaq_fetch.first_n_bytes_from_dead_letter_queue(offset_copy, 64 * 1024 * 1024)
+                evaq_fetch.first_n_bytes_from_dead_letter_queue(offset_copy, RETRY_CHUNK_SIZE)
             })
             .await
             {
@@ -119,15 +143,8 @@ fn spawn_retry_worker(evaq: Arc<Evaq>) -> tokio::task::JoinHandle<()> {
                 offset
             );
 
-            if fetch_duration > Duration::from_secs(1) {
-                warn!(
-                    "first_n_bytes_from_dead_letter_queue is slow: {:?}",
-                    fetch_duration
-                );
-            }
-
             // Wait 1 second
-            sleep(Duration::from_secs(1)).await;
+            sleep(Duration::from_secs(RETRY_SIMULATED_TASK_LATECY_SEC)).await;
 
             if records.is_empty() {
                 info!(
@@ -178,7 +195,7 @@ async fn main() {
     let _ = std::fs::remove_dir_all(&test_path);
 
     let evaq = Arc::new(Evaq::new(test_path.clone()).unwrap());
-    initialize_data(evaq.clone(), 1_000_000, 2000).await;
+    initialize_data(evaq.clone(), INITIAL_RECORDS, EVENT_MESSAGE_SIZE).await;
 
     let wal_handle = spawn_wal_worker(evaq.clone());
     let retry_handle = spawn_retry_worker(evaq.clone());
