@@ -1,3 +1,3 @@
-pub mod disk_queue;
+mod disk_queue;
 pub mod evaq;
-pub mod fjall_queue;
+mod fjall_queue;

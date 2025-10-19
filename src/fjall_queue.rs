@@ -1,6 +1,5 @@
 use crate::disk_queue::{DiskQueueError, QueueRecord, ThreadSafeDiskQueue};
 use bytes::Bytes;
-use fjall::compaction::{Fifo, Strategy as CompactionStrategy};
 use fjall::{Config, Keyspace, PartitionCreateOptions, PartitionHandle, PersistMode};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -12,13 +11,13 @@ lazy_static::lazy_static! {
 }
 
 /// FjallDiskQueue implementation using fjall LSM-tree storage
-pub struct FjallDiskQueue {
+struct FjallDiskQueue {
     keyspace: Arc<Keyspace>,
     partition: PartitionHandle,
 }
 
 impl ThreadSafeDiskQueue for FjallDiskQueue {
-    fn open(path: PathBuf, name: String) -> Result<Self, DiskQueueError> {
+    fn open(path: PathBuf, name: String) -> Result<FjallDiskQueue, DiskQueueError> {
         let mut cache = KEYSPACE_CACHE.lock().unwrap();
 
         // Get or create keyspace for this path
