@@ -48,12 +48,20 @@ impl<Q: ThreadSafeDiskQueue> Evaq<Q> {
         Ok(())
     }
 
+    pub fn pop_wal(&self, id: u64) -> Result<QueueRecord, DiskQueueError> {
+        self.wal_queue.dequeue(id)
+    }
+
     /// Push a record to the dead letter queue for retry
     pub fn push_retry_item(&self, payload: Bytes) -> Result<u64, DiskQueueError> {
         let id = self.retry_next_id.fetch_add(1, Ordering::Relaxed);
         let record = QueueRecord { id, payload };
         self.dead_letter_queue.enqueue(record)?;
         Ok(id)
+    }
+
+    pub fn pop_retry_item(&self, id: u64) -> Result<QueueRecord, DiskQueueError> {
+        self.dead_letter_queue.dequeue(id)
     }
 
     /// Batch remove retry items from the dead letter queue and return the last record id
@@ -92,33 +100,27 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn test_evaq_open() {
-        let temp_dir = TempDir::new().unwrap();
-        let evaq = Evaq::<FjallDiskQueue>::open(temp_dir.path().to_path_buf());
-        assert!(evaq.is_ok());
-    }
-
-    #[test]
     fn test_push_and_remove_wal() {
         let temp_dir = TempDir::new().unwrap();
         let evaq = Evaq::<FjallDiskQueue>::open(temp_dir.path().to_path_buf()).unwrap();
-
         let id = evaq.push_wal(Bytes::from("test wal data")).unwrap();
-
+        let item = evaq.pop_wal(id);
+        assert!(item.is_ok());
+        assert_eq!(item.unwrap().payload, Bytes::from("test wal data"));
         let result = evaq.remove_wal(id);
-        assert!(result.is_ok());
+        assert!(result.is_err());
     }
 
     #[test]
     fn test_push_retry_item() {
         let temp_dir = TempDir::new().unwrap();
         let evaq = Evaq::<FjallDiskQueue>::open(temp_dir.path().to_path_buf()).unwrap();
-
         let id = evaq
             .push_retry_item(Bytes::from("test retry data"))
             .unwrap();
-
-        assert!(id > 0);
+        let item = evaq.pop_retry_item(id);
+        assert!(item.is_ok());
+        assert_eq!(item.unwrap().payload, Bytes::from("test retry data"));
     }
 
     #[test]
@@ -132,6 +134,8 @@ mod tests {
 
         let last_id = evaq.done_retry_items(vec![id1, id2, id3]).unwrap();
         assert_eq!(last_id, Some(id3));
+        let item = evaq.pop_retry_item(last_id.unwrap());
+        assert!(item.is_err());
     }
 
     #[test]
@@ -178,8 +182,8 @@ mod tests {
         let records = evaq.first_n_bytes_from_dead_letter_queue(id2, 100).unwrap();
 
         // Should get id2 and id3
-        assert!(records.len() >= 2);
-        assert!(records.iter().any(|r| r.id == id2));
+        assert!(records.len() == 2);
+        assert!(records[0].id == id2);
     }
 
     #[test]
@@ -194,7 +198,7 @@ mod tests {
         // Limit to only 6 bytes (should get only first item "item1" = 5 bytes)
         let records = evaq.first_n_bytes_from_dead_letter_queue(0, 6).unwrap();
 
-        // Should get at least 1 record
-        assert!(!records.is_empty());
+        // Should get 1 record
+        assert!(records.len() == 1);
     }
 }

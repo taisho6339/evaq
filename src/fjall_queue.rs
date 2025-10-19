@@ -130,13 +130,6 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn test_fjall_queue_open() {
-        let temp_dir = TempDir::new().unwrap();
-        let queue = FjallDiskQueue::open(temp_dir.path().to_path_buf(), "test_queue".to_string());
-        assert!(queue.is_ok());
-    }
-
-    #[test]
     fn test_enqueue_dequeue() {
         let temp_dir = TempDir::new().unwrap();
         let queue =

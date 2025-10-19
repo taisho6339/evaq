@@ -72,30 +72,3 @@ pub trait ThreadSafeDiskQueue: Send + Sync {
     /// Shutdown the queue and release resources
     fn shutdown(self) -> Result<(), DiskQueueError>;
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // Example test structure - implement actual tests when concrete implementation is ready
-    #[test]
-    fn test_queue_record_creation() {
-        let record = QueueRecord {
-            id: 1,
-            payload: Bytes::from("test payload"),
-        };
-        assert_eq!(record.id, 1);
-    }
-
-    #[test]
-    fn test_queue_record_new() {
-        let payload = Bytes::from("test payload");
-        let record = QueueRecord {
-            id: 1,
-            payload: payload.clone(),
-        };
-
-        assert_eq!(record.payload, payload);
-        assert!(record.id > 0);
-    }
-}
