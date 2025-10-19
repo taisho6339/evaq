@@ -5,26 +5,24 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Evaq - A queue system with WAL and dead letter queue support
-pub struct Evaq<Q: ThreadSafeDiskQueue> {
-    wal_queue: Q,
-    dead_letter_queue: Q,
+pub struct Evaq {
+    wal_queue: FjallDiskQueue,
+    dead_letter_queue: FjallDiskQueue,
     wal_next_id: AtomicU64,
     retry_next_id: AtomicU64,
 }
 
-// Default implementation using FjallDiskQueue
-impl Evaq<FjallDiskQueue> {
+// Implementation using FjallDiskQueue
+impl Evaq {
     /// Create a new Evaq instance with the default FjallDiskQueue backend
     pub fn new(path: PathBuf) -> Result<Self, DiskQueueError> {
         Self::open(path)
     }
-}
 
-impl<Q: ThreadSafeDiskQueue> Evaq<Q> {
     /// Create a new Evaq instance with WAL and dead letter queue
     pub fn open(path: PathBuf) -> Result<Self, DiskQueueError> {
-        let wal_queue = Q::open(path.clone(), "wal-queue".to_string())?;
-        let dead_letter_queue = Q::open(path, "dead-letter-queue".to_string())?;
+        let wal_queue = FjallDiskQueue::open(path.clone(), "wal-queue".to_string())?;
+        let dead_letter_queue = FjallDiskQueue::open(path, "dead-letter-queue".to_string())?;
 
         Ok(Self {
             wal_queue,
@@ -85,7 +83,7 @@ impl<Q: ThreadSafeDiskQueue> Evaq<Q> {
     }
 
     /// Shutdown the Evaq instance and persist all data
-    pub fn shutdown(self) -> Result<(), DiskQueueError> {
+    pub fn shutdown(&self) -> Result<(), DiskQueueError> {
         self.wal_queue.shutdown()?;
         self.dead_letter_queue.shutdown()?;
         Ok(())
@@ -95,14 +93,13 @@ impl<Q: ThreadSafeDiskQueue> Evaq<Q> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fjall_queue::FjallDiskQueue;
     use bytes::Bytes;
     use tempfile::TempDir;
 
     #[test]
     fn test_push_and_remove_wal() {
         let temp_dir = TempDir::new().unwrap();
-        let evaq = Evaq::<FjallDiskQueue>::open(temp_dir.path().to_path_buf()).unwrap();
+        let evaq = Evaq::open(temp_dir.path().to_path_buf()).unwrap();
         let id = evaq.push_wal(Bytes::from("test wal data")).unwrap();
         let item = evaq.pop_wal(id);
         assert!(item.is_ok());
@@ -114,7 +111,7 @@ mod tests {
     #[test]
     fn test_push_retry_item() {
         let temp_dir = TempDir::new().unwrap();
-        let evaq = Evaq::<FjallDiskQueue>::open(temp_dir.path().to_path_buf()).unwrap();
+        let evaq = Evaq::open(temp_dir.path().to_path_buf()).unwrap();
         let id = evaq
             .push_retry_item(Bytes::from("test retry data"))
             .unwrap();
@@ -126,7 +123,7 @@ mod tests {
     #[test]
     fn test_done_retry_items() {
         let temp_dir = TempDir::new().unwrap();
-        let evaq = Evaq::<FjallDiskQueue>::open(temp_dir.path().to_path_buf()).unwrap();
+        let evaq = Evaq::open(temp_dir.path().to_path_buf()).unwrap();
 
         let id1 = evaq.push_retry_item(Bytes::from("retry 1")).unwrap();
         let id2 = evaq.push_retry_item(Bytes::from("retry 2")).unwrap();
@@ -141,7 +138,7 @@ mod tests {
     #[test]
     fn test_done_retry_items_empty() {
         let temp_dir = TempDir::new().unwrap();
-        let evaq = Evaq::<FjallDiskQueue>::open(temp_dir.path().to_path_buf()).unwrap();
+        let evaq = Evaq::open(temp_dir.path().to_path_buf()).unwrap();
 
         let last_id = evaq.done_retry_items(vec![]).unwrap();
         assert_eq!(last_id, None);
@@ -150,7 +147,7 @@ mod tests {
     #[test]
     fn test_first_n_bytes_from_dead_letter_queue() {
         let temp_dir = TempDir::new().unwrap();
-        let evaq = Evaq::<FjallDiskQueue>::open(temp_dir.path().to_path_buf()).unwrap();
+        let evaq = Evaq::open(temp_dir.path().to_path_buf()).unwrap();
 
         // Add multiple items to the dead letter queue
         let id1 = evaq.push_retry_item(Bytes::from("item1")).unwrap();
@@ -172,7 +169,7 @@ mod tests {
     #[test]
     fn test_first_n_bytes_with_offset() {
         let temp_dir = TempDir::new().unwrap();
-        let evaq = Evaq::<FjallDiskQueue>::open(temp_dir.path().to_path_buf()).unwrap();
+        let evaq = Evaq::open(temp_dir.path().to_path_buf()).unwrap();
 
         evaq.push_retry_item(Bytes::from("item1")).unwrap();
         let id2 = evaq.push_retry_item(Bytes::from("item2")).unwrap();
@@ -189,7 +186,7 @@ mod tests {
     #[test]
     fn test_first_n_bytes_with_limit() {
         let temp_dir = TempDir::new().unwrap();
-        let evaq = Evaq::<FjallDiskQueue>::open(temp_dir.path().to_path_buf()).unwrap();
+        let evaq = Evaq::open(temp_dir.path().to_path_buf()).unwrap();
 
         evaq.push_retry_item(Bytes::from("item1")).unwrap();
         evaq.push_retry_item(Bytes::from("item2")).unwrap();

@@ -118,7 +118,7 @@ impl ThreadSafeDiskQueue for FjallDiskQueue {
         Ok(records)
     }
 
-    fn shutdown(self) -> Result<(), DiskQueueError> {
+    fn shutdown(&self) -> Result<(), DiskQueueError> {
         self.keyspace.persist(PersistMode::SyncAll)?;
         Ok(())
     }

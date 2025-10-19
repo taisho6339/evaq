@@ -70,5 +70,5 @@ pub trait ThreadSafeDiskQueue: Send + Sync {
     ) -> Result<Vec<QueueRecord>, DiskQueueError>;
 
     /// Shutdown the queue and release resources
-    fn shutdown(self) -> Result<(), DiskQueueError>;
+    fn shutdown(&self) -> Result<(), DiskQueueError>;
 }
