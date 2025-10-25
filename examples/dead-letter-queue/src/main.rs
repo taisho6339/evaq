@@ -23,14 +23,14 @@ async fn initialize_data(evaq: Arc<Evaq>, total_records: u64, record_size: usize
         total_records, record_size
     );
     let populate_start = Instant::now();
-    let data = Bytes::from("x".repeat(record_size));
+    let payload = Bytes::from("x".repeat(record_size));
 
     for i in 0..total_records {
         if i % 100_000 == 0 && i > 0 {
             info!("Populated {} records", i);
         }
-        evaq.push_wal(data.clone()).unwrap();
-        evaq.push_retry_item(data.clone()).unwrap();
+        evaq.push_wal(payload.clone()).unwrap();
+        evaq.push_retry_item(payload.clone()).unwrap();
     }
     info!(
         "Initial population completed in {:?}",
@@ -55,14 +55,13 @@ fn spawn_wal_worker(evaq: Arc<Evaq>) -> tokio::task::JoinHandle<()> {
             for i in 0..records_per_interval {
                 let evaq = evaq.clone();
                 let delay = Duration::from_micros((i as u128 * interval_between_records) as u64);
+                let payload = Bytes::from("x".repeat(EVENT_MESSAGE_SIZE));
 
                 let handle = tokio::spawn(async move {
                     // Stagger the start times to achieve ~3000 records per second
                     sleep(delay).await;
 
-                    let id = evaq
-                        .push_wal(Bytes::from("x".repeat(EVENT_MESSAGE_SIZE)))
-                        .unwrap();
+                    let id = evaq.push_wal(payload.clone()).unwrap();
 
                     sleep(Duration::from_millis(
                         EVENT_PRODUCE_SIMULATED_TASK_LATECY_MS,
@@ -84,7 +83,7 @@ fn spawn_wal_worker(evaq: Arc<Evaq>) -> tokio::task::JoinHandle<()> {
                     "Simulating dead letter queue insertion at total_records={}",
                     total_records
                 );
-                let _ = evaq.push_retry_item(Bytes::from("x".repeat(EVENT_MESSAGE_SIZE)));
+                let _ = evaq.push_retry_item(payload);
             }
 
             let actual_records = records_per_interval;
@@ -143,9 +142,6 @@ fn spawn_retry_worker(evaq: Arc<Evaq>) -> tokio::task::JoinHandle<()> {
                 offset
             );
 
-            // Wait 1 second
-            sleep(Duration::from_secs(RETRY_SIMULATED_TASK_LATECY_SEC)).await;
-
             if records.is_empty() {
                 info!(
                     "No records to process from dead letter queue at offset {}",
@@ -153,6 +149,9 @@ fn spawn_retry_worker(evaq: Arc<Evaq>) -> tokio::task::JoinHandle<()> {
                 );
                 continue;
             }
+
+            // Wait 1 second
+            sleep(Duration::from_secs(RETRY_SIMULATED_TASK_LATECY_SEC)).await;
 
             let ids: Vec<u64> = records.iter().map(|r| r.id).collect();
             let last_id =
@@ -176,7 +175,7 @@ fn spawn_retry_worker(evaq: Arc<Evaq>) -> tokio::task::JoinHandle<()> {
     })
 }
 
-#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::main(flavor = "multi_thread")]
 async fn main() {
     // Initialize tracing subscriber for logging
     tracing_subscriber::fmt()
